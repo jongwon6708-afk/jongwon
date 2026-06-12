@@ -19,6 +19,27 @@ the surgeon orient it freely the way they see it during surgery, and compare a
 - Toggle visibility and opacity to overlay pre-op vs post-op.
 - **Export** the reconstructed mesh to STL/PLY/OBJ (e.g. for 3D printing).
 
+### Cleanup & artefact removal
+- **Median denoise** to suppress speckle and tiny calcification flecks.
+- **Island removal** drops free-floating noise/calcification fragments while
+  keeping every real bone piece.
+- **Crop box** — the fracture-safe way to remove the scanner table / back
+  board: enclose the bone in a draggable box and discard everything outside.
+  (Unlike "largest component" removal, cropping never deletes a displaced
+  fracture fragment.)
+
+### Fracture analysis
+- **Curvature highlighting** colours the surface by curvature so fracture
+  clefts stand out.
+- **Fracture feature edges** extract the sharp crack rim as red overlay lines.
+- Lowering **smoothing** preserves the fracture cleft instead of bridging it.
+
+### Comparison with a standard
+- **Mirror the healthy contralateral side** to use as the patient's own
+  normative standard, or **load a reference STL**.
+- **ICP registration** aligns the bone to the standard and a **deviation
+  heat-map** (mm) colours where it departs from normal.
+
 ## Install
 
 ```bash
@@ -55,13 +76,23 @@ isolate dense cortical bone only.
 ```
 src/bonesim/
   dicom_loader.py    # DICOM series -> HU volume (numpy + vtkImageData)
-  reconstruction.py  # threshold + Flying Edges -> smoothed bone mesh
+  preprocessing.py   # median denoise, crop-box table removal
+  reconstruction.py  # threshold + Flying Edges -> island-cleaned bone mesh
+  analysis.py        # fracture curvature/edges, mirror, ICP, deviation map
   camera_views.py    # anatomical presets + surgeon's-view save/recall
   viewer.py          # PyQt5 + VTK interactive window
   app.py             # entry point
 run.py               # launcher
-tests/test_pipeline.py  # headless smoke tests (no display needed)
+scripts/
+  render_demo.py           # offscreen render of a bone phantom
+  render_fracture_demo.py  # before/after of cleanup + fracture highlight
+tests/
+  test_pipeline.py   # reconstruction smoke tests
+  test_analysis.py   # cleanup, fracture, mirror/ICP/deviation tests
+  test_gui_smoke.py  # offscreen GUI wiring test (Qt 'offscreen' platform)
 ```
+
+All tests run headless (no display); the GUI test uses Qt's offscreen platform.
 
 ## Tests
 
