@@ -11,3 +11,4 @@ venv/
 *.obj
 *.dcm
 data/
+demo_output/
