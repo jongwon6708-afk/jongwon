@@ -1,0 +1,6 @@
+# 3D Bone CT Simulator - dependencies
+# Tested on Windows 10/11 with Python 3.9 - 3.12
+vtk>=9.2
+PyQt5>=5.15
+numpy>=1.22
+pydicom>=2.3
