@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PDF 학습 튜터</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --card: #ffffff; --line: #e3e0d8; --ink: #2b2b2b;
+    --muted: #7a7568; --accent: #c0623f; --accent-soft: #f3e6df;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.6;
+  }
+  header { padding: 20px 24px; border-bottom: 1px solid var(--line); background: var(--card); }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+    font-size: 15px; font-family: inherit; background: #fff;
+  }
+  textarea { resize: vertical; min-height: 64px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 120px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 10px 16px; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: var(--accent-soft); color: var(--accent); }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tabs button { background: #efece5; color: var(--ink); font-weight: 500; }
+  .tabs button.active { background: var(--accent); color: #fff; }
+  .hidden { display: none; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .warn { background: #fdf0e9; border: 1px solid #f0c7b3; color: #9a3a18; padding: 12px 14px; border-radius: 8px; font-size: 14px; }
+  .out { white-space: pre-wrap; word-break: break-word; margin-top: 12px; }
+  .chip { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 10px; font-size: 12px; margin-left: 6px; }
+  .qcard { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  .choice { display: block; width: 100%; text-align: left; background: #f4f2ec; color: var(--ink); margin: 6px 0; font-weight: 500; }
+  .choice.correct { background: #d8efd8; }
+  .choice.wrong { background: #f6d6d0; }
+  .flash { border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 12px; cursor: pointer; background: #fff; }
+  .flash .back { color: var(--accent); margin-top: 8px; }
+  .spin { color: var(--muted); font-size: 14px; }
+  small.page { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>📖 PDF 학습 튜터</h1>
+  <p>수천 페이지짜리 책도 AI가 대신 읽고 요약·질문답변·퀴즈·복습카드로 가르쳐 줍니다.</p>
+</header>
+
+<div class="wrap">
+  <div id="keyWarn" class="warn hidden">
+    ⚠️ ANTHROPIC_API_KEY가 설정되지 않았습니다. 업로드·검색은 되지만 AI 기능은 동작하지 않습니다.
+    프로젝트의 <code>.env</code> 파일에 키를 넣고 서버를 다시 시작하세요. (키 발급: console.anthropic.com)
+  </div>
+
+  <!-- 문서 업로드 / 선택 -->
+  <div class="card">
+    <label>1) PDF 업로드</label>
+    <div class="row">
+      <input type="file" id="file" accept="application/pdf" />
+      <button id="uploadBtn" style="flex:0 0 auto;">업로드</button>
+    </div>
+    <div id="uploadMsg" class="muted" style="margin-top:8px;"></div>
+
+    <label style="margin-top:16px;">2) 학습할 문서 선택</label>
+    <select id="docSelect"></select>
+  </div>
+
+  <!-- 탭 -->
+  <div class="tabs">
+    <button data-tab="chat" class="active">💬 질문답변</button>
+    <button data-tab="summary">📝 요약</button>
+    <button data-tab="quiz">❓ 퀴즈</button>
+    <button data-tab="flash">🗂️ 플래시카드</button>
+  </div>
+
+  <!-- 질문답변 -->
+  <div id="tab-chat" class="card tabpane">
+    <label>책 내용에 대해 물어보세요</label>
+    <textarea id="chatQ" placeholder="예: 3장에서 말하는 핵심 원리가 뭐야?"></textarea>
+    <div style="margin-top:10px;"><button id="askBtn">질문하기</button></div>
+    <div id="chatOut" class="out"></div>
+  </div>
+
+  <!-- 요약 -->
+  <div id="tab-summary" class="card tabpane hidden">
+    <label>주제(선택) — 비우면 페이지 범위 또는 앞부분을 요약</label>
+    <input type="text" id="sumTopic" placeholder="예: 머신러닝의 종류" />
+    <div class="row" style="margin-top:10px;">
+      <div><label>시작 쪽</label><input type="number" id="sumStart" min="1" /></div>
+      <div><label>끝 쪽</label><input type="number" id="sumEnd" min="1" /></div>
+    </div>
+    <div style="margin-top:10px;"><button id="sumBtn">요약하기</button></div>
+    <div id="sumOut" class="out"></div>
+  </div>
+
+  <!-- 퀴즈 -->
+  <div id="tab-quiz" class="card tabpane hidden">
+    <label>주제(선택)</label>
+    <input type="text" id="quizTopic" placeholder="예: 2장 핵심 개념" />
+    <div class="row" style="margin-top:10px;">
+      <div><label>시작 쪽</label><input type="number" id="quizStart" min="1" /></div>
+      <div><label>끝 쪽</label><input type="number" id="quizEnd" min="1" /></div>
+      <div><label>문항 수</label><input type="number" id="quizCount" value="5" min="1" max="10" /></div>
+    </div>
+    <div style="margin-top:10px;"><button id="quizBtn">문제 만들기</button></div>
+    <div id="quizOut" class="out"></div>
+  </div>
+
+  <!-- 플래시카드 -->
+  <div id="tab-flash" class="card tabpane hidden">
+    <label>주제(선택)</label>
+    <input type="text" id="flashTopic" placeholder="예: 핵심 용어" />
+    <div class="row" style="margin-top:10px;">
+      <div><label>시작 쪽</label><input type="number" id="flashStart" min="1" /></div>
+      <div><label>끝 쪽</label><input type="number" id="flashEnd" min="1" /></div>
+      <div><label>카드 수</label><input type="number" id="flashCount" value="8" min="1" max="20" /></div>
+    </div>
+    <div style="margin-top:10px;"><button id="flashBtn">카드 만들기</button></div>
+    <div class="muted" style="margin-top:6px;">카드를 클릭하면 뒷면이 보입니다.</div>
+    <div id="flashOut" class="out"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function checkStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    if (!s.api_key_set) $('keyWarn').classList.remove('hidden');
+  } catch (e) {}
+}
+
+async function loadDocs() {
+  const r = await fetch('/api/docs');
+  const docs = await r.json();
+  const sel = $('docSelect');
+  sel.innerHTML = '';
+  if (docs.length === 0) {
+    sel.innerHTML = '<option value="">— 업로드된 문서가 없습니다 —</option>';
+    return;
+  }
+  for (const d of docs) {
+    const o = document.createElement('option');
+    o.value = d.id;
+    o.textContent = `${d.filename} (${d.pages}쪽)`;
+    sel.appendChild(o);
+  }
+}
+
+function currentDoc() {
+  const id = $('docSelect').value;
+  if (!id) { alert('먼저 문서를 업로드/선택하세요.'); return null; }
+  return id;
+}
+
+// 업로드
+$('uploadBtn').onclick = async () => {
+  const f = $('file').files[0];
+  if (!f) { alert('PDF 파일을 선택하세요.'); return; }
+  $('uploadMsg').textContent = '업로드 및 분석 중... (페이지가 많으면 시간이 걸립니다)';
+  $('uploadBtn').disabled = true;
+  const fd = new FormData();
+  fd.append('file', f);
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '업로드 실패');
+    $('uploadMsg').textContent = `✅ "${data.filename}" — ${data.pages}쪽, ${data.num_chunks}개 조각으로 색인 완료`;
+    await loadDocs();
+    $('docSelect').value = data.id;
+  } catch (e) {
+    $('uploadMsg').textContent = '❌ ' + e.message;
+  } finally {
+    $('uploadBtn').disabled = false;
+  }
+};
+
+// 탭 전환
+document.querySelectorAll('.tabs button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    document.querySelectorAll('.tabpane').forEach(p => p.classList.add('hidden'));
+    $('tab-' + b.dataset.tab).classList.remove('hidden');
+  };
+});
+
+// 질문답변(스트리밍)
+$('askBtn').onclick = async () => {
+  const doc_id = currentDoc(); if (!doc_id) return;
+  const question = $('chatQ').value.trim();
+  if (!question) { alert('질문을 입력하세요.'); return; }
+  const out = $('chatOut');
+  out.textContent = '생각 중...';
+  $('askBtn').disabled = true;
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ doc_id, question })
+    });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || '오류'); }
+    out.textContent = '';
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out.textContent += dec.decode(value, { stream: true });
+    }
+  } catch (e) {
+    out.textContent = '❌ ' + e.message;
+  } finally {
+    $('askBtn').disabled = false;
+  }
+};
+
+// 요약
+$('sumBtn').onclick = async () => {
+  const doc_id = currentDoc(); if (!doc_id) return;
+  const out = $('sumOut'); out.innerHTML = '<span class="spin">요약 중...</span>';
+  $('sumBtn').disabled = true;
+  try {
+    const body = {
+      doc_id, topic: $('sumTopic').value,
+      page_start: numOrNull('sumStart'), page_end: numOrNull('sumEnd')
+    };
+    const r = await fetch('/api/summary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '오류');
+    out.textContent = data.summary;
+  } catch (e) { out.textContent = '❌ ' + e.message; }
+  finally { $('sumBtn').disabled = false; }
+};
+
+// 퀴즈
+$('quizBtn').onclick = async () => {
+  const doc_id = currentDoc(); if (!doc_id) return;
+  const out = $('quizOut'); out.innerHTML = '<span class="spin">문제 생성 중...</span>';
+  $('quizBtn').disabled = true;
+  try {
+    const body = {
+      doc_id, topic: $('quizTopic').value,
+      page_start: numOrNull('quizStart'), page_end: numOrNull('quizEnd'),
+      count: parseInt($('quizCount').value) || 5
+    };
+    const r = await fetch('/api/quiz', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '오류');
+    renderQuiz(data.questions);
+  } catch (e) { out.textContent = '❌ ' + e.message; }
+  finally { $('quizBtn').disabled = false; }
+};
+
+function renderQuiz(questions) {
+  const out = $('quizOut'); out.innerHTML = '';
+  questions.forEach((q, qi) => {
+    const card = document.createElement('div'); card.className = 'qcard';
+    const title = document.createElement('div');
+    title.innerHTML = `<b>Q${qi + 1}.</b> ${escapeHtml(q.question)} <small class="page">(${q.page}쪽)</small>`;
+    card.appendChild(title);
+    q.choices.forEach((c, ci) => {
+      const btn = document.createElement('button');
+      btn.className = 'choice';
+      btn.textContent = `${ci + 1}. ${c}`;
+      btn.onclick = () => {
+        Array.from(card.querySelectorAll('.choice')).forEach((b, bi) => {
+          b.disabled = true;
+          if (bi === q.answer_index) b.classList.add('correct');
+          else if (bi === ci) b.classList.add('wrong');
+        });
+        const exp = document.createElement('div');
+        exp.className = 'muted'; exp.style.marginTop = '6px';
+        exp.textContent = (ci === q.answer_index ? '⭕ 정답! ' : '❌ 오답. ') + q.explanation;
+        card.appendChild(exp);
+      };
+      card.appendChild(btn);
+    });
+    out.appendChild(card);
+  });
+}
+
+// 플래시카드
+$('flashBtn').onclick = async () => {
+  const doc_id = currentDoc(); if (!doc_id) return;
+  const out = $('flashOut'); out.innerHTML = '<span class="spin">카드 생성 중...</span>';
+  $('flashBtn').disabled = true;
+  try {
+    const body = {
+      doc_id, topic: $('flashTopic').value,
+      page_start: numOrNull('flashStart'), page_end: numOrNull('flashEnd'),
+      count: parseInt($('flashCount').value) || 8
+    };
+    const r = await fetch('/api/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '오류');
+    renderFlash(data.cards);
+  } catch (e) { out.textContent = '❌ ' + e.message; }
+  finally { $('flashBtn').disabled = false; }
+};
+
+function renderFlash(cards) {
+  const out = $('flashOut'); out.innerHTML = '';
+  cards.forEach(c => {
+    const el = document.createElement('div'); el.className = 'flash';
+    el.innerHTML = `<div><b>${escapeHtml(c.front)}</b> <small class="page">(${c.page}쪽)</small></div>`;
+    const back = document.createElement('div');
+    back.className = 'back hidden'; back.textContent = c.back;
+    el.appendChild(back);
+    el.onclick = () => back.classList.toggle('hidden');
+    out.appendChild(el);
+  });
+}
+
+function numOrNull(id) { const v = parseInt($(id).value); return isNaN(v) ? null : v; }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+checkStatus();
+loadDocs();
+</script>
+</body>
+</html>

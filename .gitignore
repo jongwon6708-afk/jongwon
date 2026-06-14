@@ -16,3 +16,11 @@ build/
 .build/
 .swiftpm/
 Packages/
+
+# Python (pdf_tutor)
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+pdf_tutor/data/
