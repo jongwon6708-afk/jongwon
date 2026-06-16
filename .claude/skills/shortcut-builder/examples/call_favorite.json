@@ -1,0 +1,22 @@
+{
+  "name": "Quick Call",
+  "color": 1440408063,
+  "glyph": 61440,
+  "import_questions": [
+    {
+      "ActionIndex": 0,
+      "ParameterKey": "WFPhoneNumber",
+      "Category": "Parameter",
+      "Text": "Which phone number should this call?",
+      "DefaultValue": ""
+    }
+  ],
+  "actions": [
+    {
+      "id": "is.workflow.actions.makephonecall",
+      "params": {
+        "WFPhoneNumber": ""
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "name": "Morning Briefing",
+  "color": 4251333119,
+  "glyph": 61440,
+  "actions": [
+    {
+      "id": "is.workflow.actions.weather.currentconditions",
+      "params": {},
+      "output": "weather"
+    },
+    {
+      "id": "is.workflow.actions.gettext",
+      "params": {
+        "WFTextActionText": "Good morning! It's {{CurrentDate}}. Current weather: {{weather}}."
+      },
+      "output": "briefing"
+    },
+    {
+      "id": "is.workflow.actions.speaktext",
+      "params": {
+        "WFText": "{{briefing}}"
+      }
+    },
+    {
+      "id": "is.workflow.actions.showresult",
+      "params": {
+        "Text": "{{briefing}}"
+      }
+    }
+  ]
+}
