@@ -1,0 +1,20 @@
+{
+  "name": "Open Claude Code",
+  "color": 4251333119,
+  "glyph": 61440,
+  "actions": [
+    {
+      "id": "is.workflow.actions.url",
+      "params": {
+        "WFURLActionURL": "claude://code"
+      },
+      "output": "claudeURL"
+    },
+    {
+      "id": "is.workflow.actions.openurl",
+      "params": {
+        "WFInput": "{{claudeURL}}"
+      }
+    }
+  ]
+}
