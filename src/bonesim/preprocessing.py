@@ -90,3 +90,70 @@ def _crop_image(
     clip.ClipDataOn()
     clip.Update()
     return clip.GetOutput()
+
+
+def fill_enclosed_cavities(image: vtk.vtkImageData, threshold_hu: float) -> vtk.vtkImageData:
+    """Return a binary (0/1) image where bone AND its enclosed cavities are 1.
+
+    A surface at a single isovalue is only a shell, and the femoral head's
+    trabecular interior/marrow is below the bone threshold, so the head looks
+    hollow. This fills any background pocket that is NOT connected to the volume
+    border (i.e. truly enclosed by bone), producing a solid model when surfaced
+    at 0.5.
+
+    Note: for mechanical/FEA use you should NOT fill -- keep the real HU
+    distribution so cortical vs trabecular density is preserved.
+    """
+    extent = image.GetExtent()
+    origin = image.GetOrigin()
+    spacing = image.GetSpacing()
+
+    # 1) Binary bone mask.
+    bone = vtk.vtkImageThreshold()
+    bone.SetInputData(image)
+    bone.ThresholdByUpper(threshold_hu)
+    bone.SetInValue(1)
+    bone.SetOutValue(0)
+    bone.SetOutputScalarTypeToUnsignedChar()
+    bone.Update()
+
+    # 2) Background mask (everything that is not bone).
+    background = vtk.vtkImageThreshold()
+    background.SetInputData(bone.GetOutput())
+    background.ThresholdByLower(0.5)
+    background.SetInValue(1)
+    background.SetOutValue(0)
+    background.SetOutputScalarTypeToUnsignedChar()
+    background.Update()
+
+    # 3) The "outside" is the background reachable from the volume corners.
+    seeds = vtk.vtkPolyData()
+    points = vtk.vtkPoints()
+    for ix in (extent[0], extent[1]):
+        for iy in (extent[2], extent[3]):
+            for iz in (extent[4], extent[5]):
+                points.InsertNextPoint(
+                    origin[0] + ix * spacing[0],
+                    origin[1] + iy * spacing[1],
+                    origin[2] + iz * spacing[2],
+                )
+    seeds.SetPoints(points)
+
+    outside = vtk.vtkImageConnectivityFilter()
+    outside.SetInputData(background.GetOutput())
+    outside.SetSeedData(seeds)
+    outside.SetExtractionModeToSeededRegions()
+    outside.SetScalarRange(1, 1)
+    outside.SetLabelModeToConstantValue()
+    outside.SetLabelConstantValue(1)
+    outside.Update()
+
+    # 4) Solid = NOT outside (bone + all enclosed cavities).
+    solid = vtk.vtkImageThreshold()
+    solid.SetInputData(outside.GetOutput())
+    solid.ThresholdByLower(0.5)  # voxels the outside flood did not reach
+    solid.SetInValue(1)
+    solid.SetOutValue(0)
+    solid.SetOutputScalarTypeToUnsignedChar()
+    solid.Update()
+    return solid.GetOutput()

@@ -83,6 +83,25 @@ def make_trauma_phantom(shape=(60, 140, 140)) -> CTVolume:
                     description="trauma_phantom")
 
 
+def make_hollow_sphere_phantom(shape=(80, 80, 80)) -> CTVolume:
+    """A cortical shell sphere with a low-HU interior (like a femoral head).
+
+    The interior is an *enclosed* cavity, so a single-isovalue surface renders
+    it hollow -- exactly the phenomenon the solid-fill option addresses.
+    """
+    depth, height, width = shape
+    hu = np.full(shape, -200.0, dtype=np.float32)
+    cz, cy, cx = depth / 2.0, height / 2.0, width / 2.0
+    zz, yy, xx = np.mgrid[0:depth, 0:height, 0:width]
+    r = np.sqrt((zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2)
+    shell = (r <= 30.0) & (r >= 24.0)  # thin cortical shell
+    hu[shell] = 900.0                  # interior (r<24) stays low HU
+    spacing = (1.0, 1.0, 1.0)
+    image = _numpy_to_vtk_image(hu, spacing, (0.0, 0.0, 0.0))
+    return CTVolume(hu=hu, spacing=spacing, origin=(0, 0, 0), image=image,
+                    description="hollow_sphere")
+
+
 def test_phantom_reconstruction_nonempty():
     volume = make_phantom()
     mesh = reconstruct_bone(volume, ReconstructionParams(threshold_hu=400.0))

@@ -11,7 +11,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bonesim.reconstruction import ReconstructionParams, reconstruct_bone  # noqa: E402
 from bonesim.preprocessing import PreprocessParams  # noqa: E402
 from bonesim import analysis  # noqa: E402
-from test_pipeline import make_trauma_phantom  # noqa: E402
+from bonesim.preprocessing import fill_enclosed_cavities  # noqa: E402
+from vtk.util import numpy_support  # noqa: E402
+from test_pipeline import make_trauma_phantom, make_hollow_sphere_phantom  # noqa: E402
 
 
 def _count(mesh):
@@ -58,6 +60,25 @@ def test_crop_removes_table_keeps_fragments():
     assert cb[5] - cb[4] > 20.0
 
 
+def test_solid_fill_fills_cavity():
+    volume = make_hollow_sphere_phantom()
+    filled = fill_enclosed_cavities(volume.image, threshold_hu=400.0)
+    arr = numpy_support.vtk_to_numpy(filled.GetPointData().GetScalars())
+    # The interior cavity should now be solid: the centre voxel must be 1.
+    dims = filled.GetDimensions()  # (w, h, d)
+    center_idx = (dims[2] // 2) * dims[1] * dims[0] + (dims[1] // 2) * dims[0] + dims[0] // 2
+    assert arr[center_idx] == 1
+
+    # And solid-fill reconstruction yields a valid closed mesh.
+    solid = reconstruct_bone(volume, ReconstructionParams(
+        threshold_hu=400.0, solid_fill=True, island_min_fraction=0.0))
+    hollow = reconstruct_bone(volume, ReconstructionParams(
+        threshold_hu=400.0, solid_fill=False, island_min_fraction=0.0))
+    # Removing the inner wall means the solid surface has fewer triangles.
+    assert solid.GetNumberOfCells() > 0
+    assert solid.GetNumberOfCells() < hollow.GetNumberOfCells()
+
+
 def test_curvature_scalars_present():
     volume = make_trauma_phantom()
     mesh = reconstruct_bone(volume, ReconstructionParams(threshold_hu=500.0))
@@ -91,6 +112,7 @@ def test_mirror_and_distance():
 if __name__ == "__main__":
     test_island_removal_reduces_fragments()
     test_crop_removes_table_keeps_fragments()
+    test_solid_fill_fills_cavity()
     test_curvature_scalars_present()
     test_feature_edges_find_fracture()
     test_mirror_and_distance()

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import vtk
 
 from .dicom_loader import CTVolume
-from .preprocessing import PreprocessParams, preprocess_volume
+from .preprocessing import PreprocessParams, fill_enclosed_cavities, preprocess_volume
 
 # Sensible default HU thresholds. Cortical bone is dense (>~700 HU); a lower
 # threshold (~300) also captures trabecular bone but more soft-tissue noise.
@@ -31,6 +31,9 @@ class ReconstructionParams:
     # Remove disconnected mesh fragments (noise specks, calcifications) whose
     # cell count is below this fraction of the largest region. 0 disables it.
     island_min_fraction: float = 0.02
+    # Fill enclosed cavities so trabecular-bone interiors (e.g. femoral head)
+    # appear solid instead of hollow. For visualisation only -- not for FEA.
+    solid_fill: bool = False
     preprocess: PreprocessParams = field(default_factory=PreprocessParams)
 
 
@@ -44,8 +47,13 @@ def reconstruct_bone(volume: CTVolume, params: ReconstructionParams) -> vtk.vtkP
     image = preprocess_volume(volume, params.preprocess)
 
     surface = vtk.vtkFlyingEdges3D()
+    if params.solid_fill:
+        # Surface the filled binary mask at its mid-level instead of the HU.
+        image = fill_enclosed_cavities(image, params.threshold_hu)
+        surface.SetValue(0, 0.5)
+    else:
+        surface.SetValue(0, params.threshold_hu)
     surface.SetInputData(image)
-    surface.SetValue(0, params.threshold_hu)
     surface.ComputeNormalsOff()
     surface.ComputeScalarsOff()
     surface.Update()
