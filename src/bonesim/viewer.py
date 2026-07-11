@@ -131,7 +131,12 @@ class ViewerWindow(QtWidgets.QMainWindow):
             "Caution: removes ALL disconnected pieces, including displaced "
             "fracture fragments. Use the crop box to remove the table instead."
         )
-        for chk in (self.chk_denoise, self.chk_largest):
+        self.chk_solid = QtWidgets.QCheckBox("Solid fill (hollow interiors)")
+        self.chk_solid.setToolTip(
+            "Fill enclosed low-HU cavities (e.g. femoral head trabecular "
+            "interior) so it looks solid. Visualisation only -- not for FEA."
+        )
+        for chk in (self.chk_denoise, self.chk_largest, self.chk_solid):
             chk.toggled.connect(self._rebuild_all)
             clean_layout.addWidget(chk)
         # Crop box: the fracture-safe way to remove the table / back board.
@@ -246,6 +251,7 @@ class ViewerWindow(QtWidgets.QMainWindow):
             threshold_hu=float(self.thr_slider.value()),
             smoothing_iterations=int(self.smooth_slider.value()),
             largest_component_only=self.chk_largest.isChecked(),
+            solid_fill=self.chk_solid.isChecked(),
             preprocess=PreprocessParams(
                 median_denoise=self.chk_denoise.isChecked(),
                 crop_bounds=self.crop_bounds,

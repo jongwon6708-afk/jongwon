@@ -27,6 +27,11 @@ the surgeon orient it freely the way they see it during surgery, and compare a
   board: enclose the bone in a draggable box and discard everything outside.
   (Unlike "largest component" removal, cropping never deletes a displaced
   fracture fragment.)
+- **Solid fill** — a single-isovalue surface is only a shell, and trabecular
+  interiors (e.g. the femoral head) sit below the bone threshold, so they read
+  as hollow. Solid fill fills enclosed low-HU cavities so the bone looks solid.
+  Visualisation only — do **not** use it for FEA, where the real cortical vs
+  trabecular HU distribution must be preserved.
 
 ### Fracture analysis
 - **Curvature highlighting** colours the surface by curvature so fracture
