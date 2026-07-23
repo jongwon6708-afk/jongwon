@@ -79,6 +79,24 @@ def test_solid_fill_fills_cavity():
     assert solid.GetNumberOfCells() < hollow.GetNumberOfCells()
 
 
+def test_cross_section_capped_and_open():
+    volume = make_hollow_sphere_phantom()
+    solid = reconstruct_bone(volume, ReconstructionParams(
+        threshold_hu=400.0, solid_fill=True, smoothing_iterations=0,
+        island_min_fraction=0.0))
+    b = solid.GetBounds()
+    origin = ((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2)
+
+    capped = analysis.cross_section(solid, origin, (0, 1, 0), capped=True)
+    open_cut = analysis.cross_section(solid, origin, (0, 1, 0), capped=False)
+    assert capped.GetNumberOfCells() > 0
+    assert open_cut.GetNumberOfCells() > 0
+    # Cutting removes roughly half the surface.
+    assert open_cut.GetNumberOfPoints() < solid.GetNumberOfPoints()
+    # The kept half lies on one side of the cut plane (normal +y keeps +y).
+    assert capped.GetBounds()[2] >= origin[1] - 1.0
+
+
 def test_curvature_scalars_present():
     volume = make_trauma_phantom()
     mesh = reconstruct_bone(volume, ReconstructionParams(threshold_hu=500.0))
@@ -113,6 +131,7 @@ if __name__ == "__main__":
     test_island_removal_reduces_fragments()
     test_crop_removes_table_keeps_fragments()
     test_solid_fill_fills_cavity()
+    test_cross_section_capped_and_open()
     test_curvature_scalars_present()
     test_feature_edges_find_fracture()
     test_mirror_and_distance()

@@ -23,6 +23,7 @@ from PyQt5.QtCore import Qt
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
 from . import analysis
+from .analysis import cross_section
 from .camera_views import ANATOMICAL_VIEWS, CameraPose, apply_anatomical_view
 from .dicom_loader import CTVolume, load_dicom_series
 from .preprocessing import PreprocessParams
@@ -65,6 +66,8 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.box_widget: vtk.vtkBoxWidget2 | None = None
 
         self._build_ui()
+
+    # Cross-section state is initialised in the control panel builder.
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -170,6 +173,39 @@ class ViewerWindow(QtWidgets.QMainWindow):
         frac_layout.addWidget(self.chk_curvature)
         frac_layout.addWidget(self.chk_edges)
         v.addWidget(frac_box)
+
+        # --- Cross-section (cut the bone open to see inside) ---
+        xs_box = QtWidgets.QGroupBox("Cross-section")
+        xs_layout = QtWidgets.QVBoxLayout(xs_box)
+        self.chk_xs = QtWidgets.QCheckBox("Enable cutting plane")
+        self.chk_xs.toggled.connect(self._refresh_display)
+        xs_layout.addWidget(self.chk_xs)
+        axis_row = QtWidgets.QHBoxLayout()
+        axis_row.addWidget(QtWidgets.QLabel("Axis"))
+        self.xs_axis = QtWidgets.QComboBox()
+        self.xs_axis.addItems(["X (sagittal)", "Y (coronal)", "Z (axial)"])
+        self.xs_axis.setCurrentIndex(2)
+        self.xs_axis.currentIndexChanged.connect(self._refresh_display)
+        axis_row.addWidget(self.xs_axis)
+        xs_layout.addLayout(axis_row)
+        xs_layout.addWidget(QtWidgets.QLabel("Cut position"))
+        self.xs_pos = QtWidgets.QSlider(Qt.Horizontal)
+        self.xs_pos.setRange(0, 100)
+        self.xs_pos.setValue(50)
+        self.xs_pos.valueChanged.connect(self._refresh_display)
+        xs_layout.addWidget(self.xs_pos)
+        self.chk_xs_flip = QtWidgets.QCheckBox("Flip side")
+        self.chk_xs_flip.toggled.connect(self._refresh_display)
+        self.chk_xs_cap = QtWidgets.QCheckBox("Fill cut face (solid)")
+        self.chk_xs_cap.setChecked(True)
+        self.chk_xs_cap.setToolTip(
+            "Cap the cut so a solid interior shows a filled face and a hollow "
+            "one shows a ring -- the way to tell solid from hollow."
+        )
+        self.chk_xs_cap.toggled.connect(self._refresh_display)
+        xs_layout.addWidget(self.chk_xs_flip)
+        xs_layout.addWidget(self.chk_xs_cap)
+        v.addWidget(xs_box)
 
         # --- Visibility / opacity ---
         vis_box = QtWidgets.QGroupBox("Visibility")
@@ -319,7 +355,16 @@ class ViewerWindow(QtWidgets.QMainWindow):
             return
 
         mapper = vtk.vtkPolyDataMapper()
-        if self.chk_curvature.isChecked():
+        if self.chk_xs.isChecked():
+            # Cross-section view takes priority: cut the bone open. Curvature
+            # colouring is dropped here so the cut face reads as solid.
+            section = cross_section(
+                mesh, *self._section_plane(mesh),
+                capped=self.chk_xs_cap.isChecked(),
+            )
+            mapper.SetInputData(section)
+            mapper.ScalarVisibilityOff()
+        elif self.chk_curvature.isChecked():
             colored = analysis.curvature_scalars(mesh, "mean")
             mapper.SetInputData(colored)
             mapper.SetLookupTable(_curvature_lut())
@@ -338,9 +383,28 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
         self._update_edges(key)
 
+    def _section_plane(self, mesh: vtk.vtkPolyData):
+        """Return (origin, normal) for the current cross-section controls."""
+        axis = self.xs_axis.currentIndex()  # 0=x, 1=y, 2=z
+        bounds = mesh.GetBounds()
+        center = [
+            (bounds[0] + bounds[1]) / 2.0,
+            (bounds[2] + bounds[3]) / 2.0,
+            (bounds[4] + bounds[5]) / 2.0,
+        ]
+        lo, hi = bounds[axis * 2], bounds[axis * 2 + 1]
+        frac = self.xs_pos.value() / 100.0
+        center[axis] = lo + (hi - lo) * frac
+
+        normal = [0.0, 0.0, 0.0]
+        normal[axis] = -1.0 if self.chk_xs_flip.isChecked() else 1.0
+        return tuple(center), tuple(normal)
+
     def _update_edges(self, key: str) -> None:
         model = self.models[key]
-        if self.chk_edges.isChecked() and model.mesh is not None:
+        # Suppress the full-bone edge overlay while cross-sectioning.
+        if (self.chk_edges.isChecked() and model.mesh is not None
+                and not self.chk_xs.isChecked()):
             edges = analysis.fracture_feature_edges(model.mesh, feature_angle=55.0)
             mapper = vtk.vtkPolyDataMapper()
             mapper.SetInputData(edges)

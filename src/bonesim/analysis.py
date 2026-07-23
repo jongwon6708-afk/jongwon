@@ -57,6 +57,45 @@ def fracture_feature_edges(
     return edges.GetOutput()
 
 
+def cross_section(
+    mesh: vtk.vtkPolyData,
+    origin: tuple[float, float, float],
+    normal: tuple[float, float, float],
+    capped: bool = True,
+) -> vtk.vtkPolyData:
+    """Cut *mesh* with a plane so the interior is visible.
+
+    With ``capped=True`` the cut is closed with a cap face (vtkClipClosed
+    Surface), which is what reveals whether the interior is solid: a solid bone
+    shows a filled cross-section disc, a hollow shell shows only a ring. This is
+    the tool for checking the femoral-head interior and for looking at how a
+    fracture runs through the bone.
+
+    ``capped=False`` leaves the cut open (a plain clip), useful for peeking in
+    without generating a cap.
+    """
+    plane = vtk.vtkPlane()
+    plane.SetOrigin(*origin)
+    plane.SetNormal(*normal)
+
+    if capped:
+        planes = vtk.vtkPlaneCollection()
+        planes.AddItem(plane)
+        clip = vtk.vtkClipClosedSurface()
+        clip.SetInputData(mesh)
+        clip.SetClippingPlanes(planes)
+        clip.GenerateFacesOn()   # build the cap so the section reads as solid
+        clip.GenerateOutlineOff()
+        clip.Update()
+        return clip.GetOutput()
+
+    clip = vtk.vtkClipPolyData()
+    clip.SetInputData(mesh)
+    clip.SetClipFunction(plane)
+    clip.Update()
+    return clip.GetOutput()
+
+
 # -------------------------------------------------------------- comparison
 def mirror_mesh(mesh: vtk.vtkPolyData, axis: str = "x") -> vtk.vtkPolyData:
     """Mirror *mesh* across the given world axis (for contralateral comparison).

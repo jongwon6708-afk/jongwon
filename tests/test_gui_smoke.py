@@ -48,6 +48,19 @@ def main() -> int:
     assert win.models["preop"].edge_actor is not None
     print("fracture highlight OK")
 
+    # Cross-section: cut the bone open, sweep the plane, toggle cap/flip.
+    win.chk_curvature.setChecked(False)
+    win.chk_edges.setChecked(False)
+    win.chk_xs.setChecked(True)
+    win.xs_axis.setCurrentIndex(1)
+    win.xs_pos.setValue(40)
+    win.chk_xs_flip.setChecked(True)
+    win.chk_xs_cap.setChecked(True)
+    win._refresh_display()
+    win.chk_xs_cap.setChecked(False)
+    win._refresh_display()
+    print("cross-section OK")
+
     # Compare-to-standard pipeline.
     win._mirror_to_reference()
     assert win.reference_mesh is not None

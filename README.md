@@ -39,6 +39,15 @@ the surgeon orient it freely the way they see it during surgery, and compare a
 - **Fracture feature edges** extract the sharp crack rim as red overlay lines.
 - Lowering **smoothing** preserves the fracture cleft instead of bridging it.
 
+### Cross-section
+- A **cutting plane** (X/Y/Z axis, position slider, flip side) cuts the bone
+  open so you can see inside — the femoral-head interior, or how a fracture
+  runs through the bone.
+- **Cap the cut face** to tell solid from hollow: a solid interior shows a
+  filled disc, a hollow shell shows only a thin ring. (Note: from the outside
+  a solid and a hollow bone look identical — only a cross-section reveals the
+  difference.)
+
 ### Comparison with a standard
 - **Mirror the healthy contralateral side** to use as the patient's own
   normative standard, or **load a reference STL**.
