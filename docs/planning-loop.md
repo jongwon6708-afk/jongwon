@@ -134,14 +134,35 @@ Current state and what is still missing:
 |---|---|
 | 1 Reconstruct | done |
 | 2 Isolate bone | done (region pick, scissors lasso, crop) |
-| 3 Place landmarks | **framework done; interactive picking in the 3D view still to wire** |
+| 3 Place landmarks | done (click to place, per stage) |
 | 4 Measure | done (distance / vertex angle / line angle) |
 | 5 Target from contralateral | mirroring + ICP done; measuring the mirror as a stage still to wire |
-| 6 Simulate the plan | **not built** — needs fragment transforms (move/rotate a cut piece), osteotomy cut planes, and implant (plate/screw) placement |
-| 7 Re-measure | works automatically once 6 moves the landmarks |
-| 8 Compare vs target | done (`compare`) |
+| 6a Simulate: osteotomy + reduction | done (cut plane → two fragments, translate/rotate, landmarks follow) |
+| 6b Simulate: implants (plate / lag screw) | **not built** — the remaining gap |
+| 7 Re-measure | done — moving a fragment moves its landmarks, so measurements re-derive |
+| 8 Compare vs target | done (`compare`, plus a reduction verdict) |
 | 9 Post-op verification | reconstruct post-op works; needs pre/post registration to share a frame |
 
-The single biggest gap is **step 6**. The measurement layer was built first on
-purpose: without a way to say whether a simulated plan is *better*, a
-simulation is just an animation.
+### Judging a reduction
+
+`simulation.reduction_quality()` returns the residual **gap in mm**, the
+**interpenetration volume in mm³**, and a verdict.
+
+The overlap term matters more than it first appears: a gap of zero is
+*ambiguous*. Two fragments read zero gap both when they are perfectly reduced
+and when they have been driven into each other — and bone cannot
+interpenetrate, so the second case is over-reduction, not success. Reporting
+gap alone would score the worst reduction as the best one.
+
+Overlap is measured by rasterising both fragments onto a shared grid and
+counting shared voxels. A boolean-intersection filter is the obvious
+alternative but crashes here: fragments from one cut share a coplanar face.
+
+### What is left
+
+**Implants (6b).** Per `landscape-comparison.md`, vendor plate/screw CAD is not
+publicly licensable, so the plan is to *generate* AO-style geometry
+parametrically (CadQuery/build123d) — which also makes plate length, hole count
+and curvature tunable, i.e. exactly the "which plate fits?" question. On top of
+that: plate-to-bone standoff mapping, and screw trajectory checks against the
+articular surface, the far cortex and other screws.

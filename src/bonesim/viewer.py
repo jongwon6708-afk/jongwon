@@ -22,7 +22,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
-from . import analysis, editing
+from . import analysis, editing, simulation
 from .analysis import cross_section
 from .camera_views import ANATOMICAL_VIEWS, CameraPose, apply_anatomical_view
 from .dicom_loader import CTVolume, load_dicom_series
@@ -37,6 +37,7 @@ FRACTURE_EDGE_COLOR = (1.0, 0.15, 0.15)  # red crack lines
 REFERENCE_COLOR = (0.45, 0.85, 0.5)      # green standard/reference
 SELECTION_COLOR = (1.0, 0.55, 0.1)       # orange picked structure
 LANDMARK_COLOR = (1.0, 0.85, 0.2)        # yellow measurement landmark
+FRAGMENT_COLORS = [(0.92, 0.87, 0.78), (0.70, 0.85, 0.95)]  # osteotomy pieces
 
 
 @dataclass
@@ -82,6 +83,12 @@ class ViewerWindow(QtWidgets.QMainWindow):
             self.session.add_measurement(_m)
         self.landmark_actors: dict[tuple[str, str], vtk.vtkActor] = {}
         self._landmark_observer = None
+
+        # Simulation state: two fragments after an osteotomy.
+        self.fragments: list[vtk.vtkPolyData] = []      # original geometry
+        self.fragment_actors: list[vtk.vtkActor] = []
+        self.fragment_landmarks: list[set[str]] = []    # which move with which
+        self.pre_osteotomy_mesh: vtk.vtkPolyData | None = None
 
         self._build_ui()
 
@@ -228,6 +235,64 @@ class ViewerWindow(QtWidgets.QMainWindow):
         btn_undo.clicked.connect(self._undo_edit)
         edit_layout.addWidget(btn_undo)
         v.addWidget(edit_box)
+
+        # --- Simulate the plan (osteotomy + fragment reduction) ---
+        sim_box = QtWidgets.QGroupBox("Simulate plan")
+        sim_layout = QtWidgets.QVBoxLayout(sim_box)
+        sim_layout.addWidget(QtWidgets.QLabel(
+            "Cut with the cross-section plane, then move a fragment"))
+        btn_osteotomy = QtWidgets.QPushButton("Osteotomy: cut here")
+        btn_osteotomy.setToolTip(
+            "Split the bone along the current cross-section plane into two "
+            "fragments you can reposition."
+        )
+        btn_osteotomy.clicked.connect(self._do_osteotomy)
+        sim_layout.addWidget(btn_osteotomy)
+
+        frag_row = QtWidgets.QHBoxLayout()
+        frag_row.addWidget(QtWidgets.QLabel("Move"))
+        self.fragment_combo = QtWidgets.QComboBox()
+        self.fragment_combo.addItems(["Fragment A", "Fragment B"])
+        frag_row.addWidget(self.fragment_combo)
+        sim_layout.addLayout(frag_row)
+
+        self.trans_spin = []
+        for axis in ("X", "Y", "Z"):
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel(f"shift {axis} (mm)"))
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-200.0, 200.0)
+            spin.setSingleStep(1.0)
+            spin.valueChanged.connect(self._apply_fragment_transform)
+            row.addWidget(spin)
+            self.trans_spin.append(spin)
+            sim_layout.addLayout(row)
+
+        self.rot_spin = []
+        for axis in ("X", "Y", "Z"):
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel(f"rot {axis} (deg)"))
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-180.0, 180.0)
+            spin.setSingleStep(1.0)
+            spin.valueChanged.connect(self._apply_fragment_transform)
+            row.addWidget(spin)
+            self.rot_spin.append(spin)
+            sim_layout.addLayout(row)
+
+        btn_gap = QtWidgets.QPushButton("Measure fragment gap")
+        btn_gap.clicked.connect(self._measure_fragment_gap)
+        sim_layout.addWidget(btn_gap)
+        btn_commit = QtWidgets.QPushButton("Save as plan stage")
+        btn_commit.setToolTip(
+            "Record the moved landmarks as a new stage so it can be compared."
+        )
+        btn_commit.clicked.connect(self._commit_plan_stage)
+        sim_layout.addWidget(btn_commit)
+        btn_reset_sim = QtWidgets.QPushButton("Reset simulation")
+        btn_reset_sim.clicked.connect(self._reset_simulation)
+        sim_layout.addWidget(btn_reset_sim)
+        v.addWidget(sim_box)
 
         # --- Measurement / planning ---
         meas_box = QtWidgets.QGroupBox("Measure & plan")
@@ -723,6 +788,164 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.vtk_widget.GetRenderWindow().Render()
         self.status.setText("Edit undone.")
 
+    # -------------------------------------------------------- simulation
+    def _do_osteotomy(self) -> None:
+        """Split the bone along the current cross-section plane."""
+        model = self._active_edit_model()
+        if model is None or model.mesh is None:
+            self.status.setText("Load a study first.")
+            return
+        origin, normal = self._section_plane(model.mesh)
+        frag_a, frag_b = simulation.osteotomy_cut(model.mesh, origin, normal)
+        if frag_a.GetNumberOfCells() == 0 or frag_b.GetNumberOfCells() == 0:
+            self.status.setText(
+                "Cut produced only one piece -- move the cut position so the "
+                "plane crosses the bone."
+            )
+            return
+
+        self._reset_simulation(keep_mesh=True)
+        self.pre_osteotomy_mesh = model.mesh
+        self.fragments = [frag_a, frag_b]
+
+        # Assign each landmark of the current stage to the nearer fragment, so
+        # it travels with the bone it actually sits on.
+        stage = self._current_stage()
+        self.fragment_landmarks = [set(), set()]
+        for name, lm in stage.landmarks.items():
+            d = [_distance_to_mesh(f, lm.position) for f in self.fragments]
+            self.fragment_landmarks[0 if d[0] <= d[1] else 1].add(name)
+
+        # Hide the whole-bone actor; show the fragments separately.
+        if model.actor is not None:
+            model.actor.SetVisibility(False)
+        for i, frag in enumerate(self.fragments):
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(frag)
+            mapper.ScalarVisibilityOff()
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*FRAGMENT_COLORS[i])
+            self.renderer.AddActor(actor)
+            self.fragment_actors.append(actor)
+
+        for spin in self.trans_spin + self.rot_spin:
+            spin.blockSignals(True)
+            spin.setValue(0.0)
+            spin.blockSignals(False)
+        self.vtk_widget.GetRenderWindow().Render()
+        self.status.setText(
+            "Osteotomy done: two fragments. Use the shift/rot controls to "
+            "simulate the reduction."
+        )
+
+    def _fragment_transform(self) -> vtk.vtkTransform:
+        idx = self.fragment_combo.currentIndex()
+        pivot = simulation.centroid(self.fragments[idx])
+        return simulation.build_transform(
+            translation=tuple(s.value() for s in self.trans_spin),
+            rotation_xyz=tuple(s.value() for s in self.rot_spin),
+            pivot=pivot,
+        )
+
+    def _apply_fragment_transform(self) -> None:
+        if len(self.fragments) != 2:
+            return
+        idx = self.fragment_combo.currentIndex()
+        transform = self._fragment_transform()
+        moved = simulation.transform_mesh(self.fragments[idx], transform)
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(moved)
+        mapper.ScalarVisibilityOff()
+        self.fragment_actors[idx].SetMapper(mapper)
+
+        # Landmarks on this fragment travel with it.
+        stage = self._current_stage()
+        for name in self.fragment_landmarks[idx]:
+            lm = stage.landmarks.get(name)
+            if lm is None:
+                continue
+            self._show_landmark(
+                stage.label, name,
+                simulation.transform_point(lm.position, transform))
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _current_fragment_meshes(self) -> list[vtk.vtkPolyData]:
+        """Fragment geometry with the current simulation transform applied."""
+        idx = self.fragment_combo.currentIndex()
+        transform = self._fragment_transform()
+        return [
+            simulation.transform_mesh(f, transform) if i == idx else f
+            for i, f in enumerate(self.fragments)
+        ]
+
+    def _measure_fragment_gap(self) -> None:
+        if len(self.fragments) != 2:
+            self.status.setText("Do an osteotomy first.")
+            return
+        a, b = self._current_fragment_meshes()
+        quality = simulation.reduction_quality(a, b)
+        self.measure_output.setPlainText(
+            f"Residual gap: {quality['gap_mm']:.1f} mm\n"
+            f"Interpenetration: {quality['overlap_mm3']:.0f} mm3\n"
+            f"Verdict: {quality['verdict']}"
+        )
+        self.status.setText(
+            f"Gap {quality['gap_mm']:.1f} mm -- {quality['verdict']}")
+
+    def _commit_plan_stage(self) -> None:
+        """Record the simulated result as a new stage for comparison."""
+        if len(self.fragments) != 2:
+            self.status.setText("Do an osteotomy first.")
+            return
+        label, ok = QtWidgets.QInputDialog.getText(
+            self, "Save plan stage", "Stage name:", text="plan-v1")
+        if not ok or not label.strip():
+            return
+        label = label.strip()
+        source = self._current_stage()
+        idx = self.fragment_combo.currentIndex()
+        transform = self._fragment_transform()
+
+        try:
+            target = self.session.stage(label)
+            target.landmarks.clear()
+        except KeyError:
+            target = self.session.add_stage(label, note="simulated plan")
+        for name, lm in source.landmarks.items():
+            position = (
+                simulation.transform_point(lm.position, transform)
+                if name in self.fragment_landmarks[idx] else lm.position
+            )
+            target.add_landmark(name, position)
+
+        if self.stage_combo.findText(label) < 0:
+            self.stage_combo.addItem(label)
+        results = self.session.evaluate_stage(label)
+        self.status.setText(
+            f"Saved stage '{label}' with {len(target.landmarks)} landmarks, "
+            f"{len(results)} measurement(s)."
+        )
+        self._measure_stage_named(label)
+
+    def _reset_simulation(self, keep_mesh: bool = False) -> None:
+        for actor in self.fragment_actors:
+            self.renderer.RemoveActor(actor)
+        self.fragment_actors.clear()
+        self.fragments.clear()
+        self.fragment_landmarks.clear()
+        if not keep_mesh:
+            model = self.models[self.edit_key]
+            if model.actor is not None:
+                model.actor.SetVisibility(True)
+            self.pre_osteotomy_mesh = None
+            for spin in self.trans_spin + self.rot_spin:
+                spin.blockSignals(True)
+                spin.setValue(0.0)
+                spin.blockSignals(False)
+            self.vtk_widget.GetRenderWindow().Render()
+            self.status.setText("Simulation reset.")
+
     # ------------------------------------------------------- measurement
     def _current_stage(self):
         """The PlanStage for the stage name in the combo, creating it if new."""
@@ -785,7 +1008,10 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.vtk_widget.GetRenderWindow().Render()
 
     def _measure_stage(self) -> None:
-        stage = self._current_stage()
+        self._measure_stage_named(self._current_stage().label)
+
+    def _measure_stage_named(self, label: str) -> None:
+        stage = self.session.stage(label)
         results = self.session.evaluate_stage(stage.label)
         if not results:
             self.measure_output.setPlainText(
@@ -1026,6 +1252,18 @@ class ViewerWindow(QtWidgets.QMainWindow):
 
 
 # ----------------------------------------------------------------- helpers
+def _distance_to_mesh(mesh: vtk.vtkPolyData, point) -> float:
+    """Distance from *point* to the nearest vertex of *mesh*."""
+    if mesh.GetNumberOfPoints() == 0:
+        return float("inf")
+    locator = vtk.vtkPointLocator()
+    locator.SetDataSet(mesh)
+    locator.BuildLocator()
+    q = mesh.GetPoint(locator.FindClosestPoint(point))
+    return ((point[0] - q[0]) ** 2 + (point[1] - q[1]) ** 2
+            + (point[2] - q[2]) ** 2) ** 0.5
+
+
 def _mesh_reader(path: str):
     lower = path.lower()
     if lower.endswith(".stl"):

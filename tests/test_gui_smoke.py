@@ -107,6 +107,34 @@ def main() -> int:
         assert os.path.getsize(p) > 0
     print("measurement / planning OK")
 
+    # Simulation: osteotomy -> displace a fragment -> verdict -> commit stage.
+    from bonesim import simulation as _sim
+    win.chk_xs.setChecked(False)
+    win.chk_xs_flip.setChecked(False)   # fragment A = the +normal side
+    win.xs_axis.setCurrentIndex(2)      # axial cut
+    win.xs_pos.setValue(50)
+    win.stage_combo.setCurrentText("pre-op")
+    win._do_osteotomy()
+    assert len(win.fragments) == 2, "osteotomy should yield two fragments"
+    assert len(win.fragment_actors) == 2
+
+    win.fragment_combo.setCurrentIndex(0)
+    win.trans_spin[2].setValue(8.0)     # pull fragment A 8 mm away
+    win._measure_fragment_gap()
+    out = win.measure_output.toPlainText()
+    assert "gapped" in out, out
+    a, b = win._current_fragment_meshes()
+    assert _sim.fragment_gap(a, b) > 1.0
+
+    # Driving it the other way must be flagged as over-reduction, not "good".
+    win.trans_spin[2].setValue(-6.0)
+    win._measure_fragment_gap()
+    assert "over-reduced" in win.measure_output.toPlainText()
+
+    win._reset_simulation()
+    assert win.fragments == []
+    print("simulation (osteotomy + reduction) OK")
+
     # Compare-to-standard pipeline.
     win._mirror_to_reference()
     assert win.reference_mesh is not None

@@ -57,6 +57,17 @@ the surgeon orient it freely the way they see it during surgery, and compare a
   for structures that touch and so cannot be separated by connectivity.
 - Selection is highlighted in orange and every edit is undoable.
 
+### Simulate the plan
+- **Osteotomy** — cut the bone along the current cross-section plane into two
+  repositionable fragments (the virtual saw cut).
+- **Reposition a fragment** with shift (mm) and rotation (deg) about its own
+  centroid; **landmarks travel with the fragment they sit on**, so the
+  measurements below re-derive on the simulated result.
+- **Reduction verdict** — residual gap in mm plus interpenetration volume, so
+  an over-reduction (fragments driven into each other, which also reads as
+  zero gap) is flagged rather than scored as a good reduction.
+- **Save as plan stage** to compare the simulated result against pre-op.
+
 ### Measure & plan (iterative surgical planning)
 - Place named **landmarks** by clicking the bone, per **stage**
   (`pre-op`, `plan-v1`, `post-op`, …).
