@@ -26,6 +26,7 @@ from . import analysis, editing
 from .analysis import cross_section
 from .camera_views import ANATOMICAL_VIEWS, CameraPose, apply_anatomical_view
 from .dicom_loader import CTVolume, load_dicom_series
+from .measurement import PlanningSession, femur_trauma_preset
 from .preprocessing import PreprocessParams
 from .reconstruction import ReconstructionParams, export_mesh, reconstruct_bone
 
@@ -35,6 +36,7 @@ POSTOP_COLOR = (0.55, 0.78, 0.92)  # cool blue
 FRACTURE_EDGE_COLOR = (1.0, 0.15, 0.15)  # red crack lines
 REFERENCE_COLOR = (0.45, 0.85, 0.5)      # green standard/reference
 SELECTION_COLOR = (1.0, 0.55, 0.1)       # orange picked structure
+LANDMARK_COLOR = (1.0, 0.85, 0.2)        # yellow measurement landmark
 
 
 @dataclass
@@ -73,6 +75,13 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.undo_mesh: vtk.vtkPolyData | None = None
         self.lasso_widget = None
         self._pick_observer = None
+
+        # Measurement / planning state.
+        self.session = PlanningSession()
+        for _m in femur_trauma_preset():
+            self.session.add_measurement(_m)
+        self.landmark_actors: dict[tuple[str, str], vtk.vtkActor] = {}
+        self._landmark_observer = None
 
         self._build_ui()
 
@@ -219,6 +228,61 @@ class ViewerWindow(QtWidgets.QMainWindow):
         btn_undo.clicked.connect(self._undo_edit)
         edit_layout.addWidget(btn_undo)
         v.addWidget(edit_box)
+
+        # --- Measurement / planning ---
+        meas_box = QtWidgets.QGroupBox("Measure & plan")
+        meas_layout = QtWidgets.QVBoxLayout(meas_box)
+        stage_row = QtWidgets.QHBoxLayout()
+        stage_row.addWidget(QtWidgets.QLabel("Stage"))
+        self.stage_combo = QtWidgets.QComboBox()
+        self.stage_combo.setEditable(True)
+        self.stage_combo.addItems(["pre-op", "plan-v1", "post-op"])
+        stage_row.addWidget(self.stage_combo)
+        meas_layout.addLayout(stage_row)
+
+        lm_row = QtWidgets.QHBoxLayout()
+        lm_row.addWidget(QtWidgets.QLabel("Landmark"))
+        self.landmark_name = QtWidgets.QComboBox()
+        self.landmark_name.setEditable(True)
+        self.landmark_name.addItems([
+            "femoral_head_center", "neck_shaft_junction", "shaft_distal",
+            "fragment_prox", "fragment_dist",
+        ])
+        lm_row.addWidget(self.landmark_name)
+        meas_layout.addLayout(lm_row)
+
+        self.btn_landmark = QtWidgets.QPushButton("Place landmark mode")
+        self.btn_landmark.setCheckable(True)
+        self.btn_landmark.setToolTip(
+            "Click on the bone to drop the named landmark at that point."
+        )
+        self.btn_landmark.toggled.connect(self._toggle_landmark_mode)
+        meas_layout.addWidget(self.btn_landmark)
+
+        btn_measure = QtWidgets.QPushButton("Measure this stage")
+        btn_measure.clicked.connect(self._measure_stage)
+        meas_layout.addWidget(btn_measure)
+
+        cmp_row = QtWidgets.QHBoxLayout()
+        btn_compare = QtWidgets.QPushButton("Compare stages")
+        btn_compare.clicked.connect(self._compare_stages)
+        cmp_row.addWidget(btn_compare)
+        meas_layout.addLayout(cmp_row)
+
+        io_row = QtWidgets.QHBoxLayout()
+        btn_save_plan = QtWidgets.QPushButton("Save plan")
+        btn_load_plan = QtWidgets.QPushButton("Load plan")
+        btn_save_plan.clicked.connect(self._save_plan)
+        btn_load_plan.clicked.connect(self._load_plan)
+        io_row.addWidget(btn_save_plan)
+        io_row.addWidget(btn_load_plan)
+        meas_layout.addLayout(io_row)
+
+        self.measure_output = QtWidgets.QTextEdit()
+        self.measure_output.setReadOnly(True)
+        self.measure_output.setFixedHeight(150)
+        meas_layout.addWidget(self.measure_output)
+        v.addWidget(meas_box)
 
         # --- Fracture analysis ---
         frac_box = QtWidgets.QGroupBox("Fracture analysis")
@@ -658,6 +722,147 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self._apply_model_display(self.edit_key)
         self.vtk_widget.GetRenderWindow().Render()
         self.status.setText("Edit undone.")
+
+    # ------------------------------------------------------- measurement
+    def _current_stage(self):
+        """The PlanStage for the stage name in the combo, creating it if new."""
+        label = self.stage_combo.currentText().strip() or "pre-op"
+        try:
+            return self.session.stage(label)
+        except KeyError:
+            return self.session.add_stage(label)
+
+    def _toggle_landmark_mode(self, enabled: bool) -> None:
+        if enabled:
+            for other in (self.btn_pick, self.btn_scissors):
+                if other.isChecked():
+                    other.setChecked(False)
+            self._landmark_observer = self.interactor.AddObserver(
+                "LeftButtonPressEvent", self._on_landmark_click, 1.0
+            )
+            self.status.setText("Click the bone to place the named landmark.")
+        elif self._landmark_observer is not None:
+            self.interactor.RemoveObserver(self._landmark_observer)
+            self._landmark_observer = None
+            self.status.setText("Landmark mode off.")
+
+    def _on_landmark_click(self, caller, event) -> None:
+        name = self.landmark_name.currentText().strip()
+        if not name:
+            return
+        x, y = self.interactor.GetEventPosition()
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.005)
+        if not picker.Pick(x, y, 0, self.renderer):
+            return
+        position = picker.GetPickPosition()
+
+        stage = self._current_stage()
+        stage.add_landmark(name, position)
+        self._show_landmark(stage.label, name, position)
+        self.status.setText(
+            f"{stage.label}: {name} at "
+            f"({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f}) mm"
+        )
+
+    def _show_landmark(self, stage_label: str, name: str, position) -> None:
+        key = (stage_label, name)
+        sphere = vtk.vtkSphereSource()
+        sphere.SetCenter(*position)
+        sphere.SetRadius(2.5)
+        sphere.SetPhiResolution(16)
+        sphere.SetThetaResolution(16)
+        sphere.Update()
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(sphere.GetOutput())
+        actor = self.landmark_actors.get(key)
+        if actor is None:
+            actor = vtk.vtkActor()
+            self.renderer.AddActor(actor)
+            self.landmark_actors[key] = actor
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(*LANDMARK_COLOR)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _measure_stage(self) -> None:
+        stage = self._current_stage()
+        results = self.session.evaluate_stage(stage.label)
+        if not results:
+            self.measure_output.setPlainText(
+                f"{stage.label}: no measurement computable yet.\n"
+                "Place the landmarks each measurement needs."
+            )
+            return
+        targets = {m.name: m for m in self.session.measurements}
+        lines = [f"[{stage.label}]"]
+        for name in sorted(results):
+            value = results[name]
+            m = targets[name]
+            ok = m.within_target(value)
+            flag = "" if ok is None else ("  OK" if ok else "  OFF TARGET")
+            tgt = "" if m.target is None else f" (target {m.target:g})"
+            lines.append(f"{name}: {value:.1f}{tgt}{flag}")
+        self.measure_output.setPlainText("\n".join(lines))
+
+    def _compare_stages(self) -> None:
+        labels = [s.label for s in self.session.stages]
+        if len(labels) < 2:
+            self.measure_output.setPlainText(
+                "Need two stages to compare. Create e.g. 'pre-op' and "
+                "'plan-v1' and place landmarks on both."
+            )
+            return
+        a, ok = QtWidgets.QInputDialog.getItem(
+            self, "Compare", "From stage:", labels, 0, False)
+        if not ok:
+            return
+        b, ok = QtWidgets.QInputDialog.getItem(
+            self, "Compare", "To stage:", labels, len(labels) - 1, False)
+        if not ok:
+            return
+        report = self.session.compare(a, b)
+        if not report:
+            self.measure_output.setPlainText(
+                f"No measurement is computable on both {a} and {b}.")
+            return
+        lines = [f"{a}  ->  {b}"]
+        for name, r in report.items():
+            flag = ("" if r["within_target"] is None
+                    else ("  OK" if r["within_target"] else "  OFF TARGET"))
+            lines.append(
+                f"{name}: {r['before']:.1f} -> {r['after']:.1f} "
+                f"({r['delta']:+.1f}){flag}"
+            )
+        self.measure_output.setPlainText("\n".join(lines))
+
+    def _save_plan(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save plan", "plan.json", "Plan (*.json)")
+        if not path:
+            return
+        self.session.save(path)
+        self.status.setText(f"Plan saved to {path}")
+
+    def _load_plan(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load plan", "", "Plan (*.json)")
+        if not path:
+            return
+        try:
+            self.session = PlanningSession.load(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Load failed", str(exc))
+            return
+        # Redraw landmarks for every stage in the loaded plan.
+        for actor in self.landmark_actors.values():
+            self.renderer.RemoveActor(actor)
+        self.landmark_actors.clear()
+        self.stage_combo.clear()
+        for stage in self.session.stages:
+            self.stage_combo.addItem(stage.label)
+            for name, lm in stage.landmarks.items():
+                self._show_landmark(stage.label, name, lm.position)
+        self.status.setText(f"Plan loaded from {path}")
 
     # -------------------------------------------------------------- crop
     def _toggle_crop_box(self) -> None:

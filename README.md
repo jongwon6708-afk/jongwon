@@ -48,6 +48,25 @@ the surgeon orient it freely the way they see it during surgery, and compare a
   a solid and a hollow bone look identical — only a cross-section reveals the
   difference.)
 
+### Edit / isolate the bone (clinical clean-up workflow)
+- **Region pick** — left-click a bone and its whole connected structure is
+  selected (ctrl-click adds more); **Keep only** isolates it, **Delete**
+  removes it. This is the one-click way to drop the table, the contralateral
+  limb, or scatter, and mirrors Mimics *Region Grow* / Slicer *Islands*.
+- **Scissors lasso** — draw a loop and cut through along the view direction,
+  for structures that touch and so cannot be separated by connectivity.
+- Selection is highlighted in orange and every edit is undoable.
+
+### Measure & plan (iterative surgical planning)
+- Place named **landmarks** by clicking the bone, per **stage**
+  (`pre-op`, `plan-v1`, `post-op`, …).
+- **Measure** distances and angles derived from those landmarks, with a
+  **target and tolerance** so each reads OK / OFF TARGET.
+- **Compare stages** to see what a simulated plan changed and whether it hit
+  the target; **save/load the plan** as JSON.
+- Ships a proximal-femur trauma preset (neck-shaft angle, fracture gap,
+  femoral offset). See [docs/planning-loop.md](docs/planning-loop.md).
+
 ### Comparison with a standard
 - **Mirror the healthy contralateral side** to use as the patient's own
   normative standard, or **load a reference STL**.
@@ -117,11 +136,31 @@ python tests/test_pipeline.py     # or: pytest tests/
 These build a synthetic bone phantom (cortical cylinder with a drilled hole)
 and verify the reconstruction pipeline without needing a display.
 
+## Why this tool exists
+
+The goal is **pre-operative simulation**: let a surgeon state the plan before
+the operation — this osteotomy, this reduction, this plate, these lag screws —
+simulate it, and see whether the radiographic numbers that matter land where
+they should.
+
+A survey of what already exists is in
+[docs/landscape-comparison.md](docs/landscape-comparison.md). Short version:
+commercial tools (Sectra 3D Trauma, mediCAD, Mimics) do this for €20–40k and
+are PACS-locked; open-source tools stop partway — none ships implant geometry,
+and *nothing open produces an ortho-specific measurement report*. That report
+is the piece this project already has.
+
 ## Roadmap (next stages)
 
-1. **Pre/post registration** — align the two studies (ICP / landmark) so
+1. **Fragment transforms** — select a fragment and move/rotate it, with
+   landmarks following, so measurements update live. This is the step that
+   turns the measurement layer into a simulator.
+2. **Parametric implants** — generate AO-style plates and screws with CadQuery
+   (vendor CAD is not publicly licensable), then plate-to-bone standoff
+   mapping and screw trajectory / articular-breach checking.
+3. **Pre/post registration** — align the two studies (ICP / landmark) so
    differences are spatially meaningful.
-2. **HU → elastic-modulus mapping** (Bonemat-style) to drive FEA.
-3. **FEA export** — generate FEBio / CalculiX input from the mesh for stress
+4. **HU → elastic-modulus mapping** (Bonemat-style) to drive FEA.
+5. **FEA export** — generate FEBio / CalculiX input from the mesh for stress
    analysis (drill/saw stress concentration, fracture reduction with
    ligament/tendon effects).

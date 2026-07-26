@@ -79,6 +79,34 @@ def main() -> int:
     win._clear_selection()
     print("bone editing OK")
 
+    # Measurement / planning loop: landmarks -> measure -> compare -> save.
+    import tempfile
+    pre = win.session.add_stage("pre-op") if not win.session.stages \
+        else win.session.stages[0]
+    for nm, pos in [("femoral_head_center", (0.0, 0.0, 50.0)),
+                    ("neck_shaft_junction", (40.0, 0.0, 0.0)),
+                    ("shaft_distal", (40.0, 0.0, -100.0))]:
+        pre.add_landmark(nm, pos)
+        win._show_landmark(pre.label, nm, pos)
+    win.stage_combo.setCurrentText(pre.label)
+    win._measure_stage()
+    text = win.measure_output.toPlainText()
+    assert "Neck-shaft angle" in text, text
+    assert "141" in text, text          # clinical convention preserved
+
+    plan = win.session.add_stage("plan-v1")
+    for nm, pos in [("femoral_head_center", (0.0, 0.0, 30.0)),
+                    ("neck_shaft_junction", (40.0, 0.0, 0.0)),
+                    ("shaft_distal", (40.0, 0.0, -100.0))]:
+        plan.add_landmark(nm, pos)
+    report = win.session.compare("pre-op", "plan-v1")
+    assert report["Neck-shaft angle"]["delta"] != 0
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "plan.json")
+        win.session.save(p)
+        assert os.path.getsize(p) > 0
+    print("measurement / planning OK")
+
     # Compare-to-standard pipeline.
     win._mirror_to_reference()
     assert win.reference_mesh is not None
