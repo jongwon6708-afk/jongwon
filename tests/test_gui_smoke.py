@@ -61,6 +61,24 @@ def main() -> int:
     win._refresh_display()
     print("cross-section OK")
 
+    # Bone editing: select a structure, isolate it, undo, then delete.
+    win.chk_xs.setChecked(False)
+    win._refresh_display()
+    mesh = win.models["preop"].mesh
+    before_cells = mesh.GetNumberOfCells()
+    win.selected_regions = {0}
+    win._show_selection()
+    assert win.selection_actor is not None
+    win._apply_selection(invert=False)          # keep only
+    assert win.models["preop"].mesh.GetNumberOfCells() <= before_cells
+    win._undo_edit()
+    assert win.models["preop"].mesh.GetNumberOfCells() == before_cells
+    win.selected_regions = {0}
+    win._apply_selection(invert=True)           # delete selected
+    win._undo_edit()
+    win._clear_selection()
+    print("bone editing OK")
+
     # Compare-to-standard pipeline.
     win._mirror_to_reference()
     assert win.reference_mesh is not None

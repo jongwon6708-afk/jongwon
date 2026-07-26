@@ -22,7 +22,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
-from . import analysis
+from . import analysis, editing
 from .analysis import cross_section
 from .camera_views import ANATOMICAL_VIEWS, CameraPose, apply_anatomical_view
 from .dicom_loader import CTVolume, load_dicom_series
@@ -34,6 +34,7 @@ PREOP_COLOR = (0.92, 0.87, 0.78)   # bone ivory
 POSTOP_COLOR = (0.55, 0.78, 0.92)  # cool blue
 FRACTURE_EDGE_COLOR = (1.0, 0.15, 0.15)  # red crack lines
 REFERENCE_COLOR = (0.45, 0.85, 0.5)      # green standard/reference
+SELECTION_COLOR = (1.0, 0.55, 0.1)       # orange picked structure
 
 
 @dataclass
@@ -65,9 +66,15 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.crop_bounds: tuple | None = None
         self.box_widget: vtk.vtkBoxWidget2 | None = None
 
-        self._build_ui()
+        # Bone-editing state.
+        self.edit_key = "preop"           # which study edits apply to
+        self.selected_regions: set[int] = set()
+        self.selection_actor: vtk.vtkActor | None = None
+        self.undo_mesh: vtk.vtkPolyData | None = None
+        self.lasso_widget = None
+        self._pick_observer = None
 
-    # Cross-section state is initialised in the control panel builder.
+        self._build_ui()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -162,6 +169,56 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.smooth_slider.sliderReleased.connect(self._rebuild_all)
         clean_layout.addWidget(self.smooth_slider)
         v.addWidget(clean_box)
+
+        # --- Bone editing (clinical clean-up workflow) ---
+        edit_box = QtWidgets.QGroupBox("Edit / isolate bone")
+        edit_layout = QtWidgets.QVBoxLayout(edit_box)
+        edit_layout.addWidget(QtWidgets.QLabel(
+            "Left-click a bone to select it"))
+        self.lbl_selection = QtWidgets.QLabel("Selected: none")
+        self.lbl_selection.setWordWrap(True)
+        edit_layout.addWidget(self.lbl_selection)
+
+        pick_row = QtWidgets.QHBoxLayout()
+        self.btn_pick = QtWidgets.QPushButton("Pick mode")
+        self.btn_pick.setCheckable(True)
+        self.btn_pick.toggled.connect(self._toggle_pick_mode)
+        btn_clear_sel = QtWidgets.QPushButton("Clear")
+        btn_clear_sel.clicked.connect(self._clear_selection)
+        pick_row.addWidget(self.btn_pick)
+        pick_row.addWidget(btn_clear_sel)
+        edit_layout.addLayout(pick_row)
+
+        keep_row = QtWidgets.QHBoxLayout()
+        btn_keep = QtWidgets.QPushButton("Keep only")
+        btn_delete = QtWidgets.QPushButton("Delete")
+        btn_keep.setToolTip("Isolate the selected bone, remove everything else")
+        btn_delete.setToolTip("Remove the selected structure (table, other limb)")
+        btn_keep.clicked.connect(lambda: self._apply_selection(invert=False))
+        btn_delete.clicked.connect(lambda: self._apply_selection(invert=True))
+        keep_row.addWidget(btn_keep)
+        keep_row.addWidget(btn_delete)
+        edit_layout.addLayout(keep_row)
+
+        # Scissors: for structures that touch, where connectivity can't split.
+        self.btn_scissors = QtWidgets.QPushButton("Scissors lasso")
+        self.btn_scissors.setCheckable(True)
+        self.btn_scissors.setToolTip(
+            "Drag to draw a loop; everything inside is cut away through the "
+            "view direction. Use where bones touch across a joint."
+        )
+        self.btn_scissors.toggled.connect(self._toggle_scissors)
+        edit_layout.addWidget(self.btn_scissors)
+        btn_apply_lasso = QtWidgets.QPushButton("Apply lasso cut")
+        btn_apply_lasso.clicked.connect(self._apply_lasso)
+        edit_layout.addWidget(btn_apply_lasso)
+        self.chk_scissors_keep = QtWidgets.QCheckBox("Keep inside instead")
+        edit_layout.addWidget(self.chk_scissors_keep)
+
+        btn_undo = QtWidgets.QPushButton("Undo edit")
+        btn_undo.clicked.connect(self._undo_edit)
+        edit_layout.addWidget(btn_undo)
+        v.addWidget(edit_box)
 
         # --- Fracture analysis ---
         frac_box = QtWidgets.QGroupBox("Fracture analysis")
@@ -432,6 +489,175 @@ class ViewerWindow(QtWidgets.QMainWindow):
         if actor is not None:
             actor.GetProperty().SetOpacity(opacity)
             self.vtk_widget.GetRenderWindow().Render()
+
+    # -------------------------------------------------------------- edit
+    def _active_edit_model(self) -> BoneModel | None:
+        """The model edits apply to: post-op if loaded, else pre-op."""
+        for key in ("preop", "postop"):
+            if self.models[key].mesh is not None:
+                self.edit_key = key
+                return self.models[key]
+        return None
+
+    def _toggle_pick_mode(self, enabled: bool) -> None:
+        """Left-click on the bone selects its connected structure."""
+        if enabled:
+            if self.btn_scissors.isChecked():
+                self.btn_scissors.setChecked(False)
+            self._pick_observer = self.interactor.AddObserver(
+                "LeftButtonPressEvent", self._on_pick_click, 1.0
+            )
+            self.status.setText("Pick mode: click a bone to select it.")
+        elif self._pick_observer is not None:
+            self.interactor.RemoveObserver(self._pick_observer)
+            self._pick_observer = None
+            self.status.setText("Pick mode off.")
+
+    def _on_pick_click(self, caller, event) -> None:
+        model = self._active_edit_model()
+        if model is None or model.mesh is None:
+            return
+        x, y = self.interactor.GetEventPosition()
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.005)
+        if not picker.Pick(x, y, 0, self.renderer):
+            return
+        rid = editing.region_id_at_point(model.mesh, picker.GetPickPosition())
+        if rid is None:
+            return
+        # Ctrl-click adds to the selection, plain click replaces it.
+        if not self.interactor.GetControlKey():
+            self.selected_regions.clear()
+        self.selected_regions.add(rid)
+        self._show_selection()
+
+    def _show_selection(self) -> None:
+        model = self.models[self.edit_key]
+        if model.mesh is None or not self.selected_regions:
+            self._clear_selection_actor()
+            return
+        highlight = editing.extract_regions(
+            model.mesh, self.selected_regions, invert=False
+        )
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(highlight)
+        mapper.ScalarVisibilityOff()
+        if self.selection_actor is None:
+            self.selection_actor = vtk.vtkActor()
+            self.renderer.AddActor(self.selection_actor)
+        self.selection_actor.SetMapper(mapper)
+        self.selection_actor.GetProperty().SetColor(*SELECTION_COLOR)
+        self.selection_actor.GetProperty().SetOpacity(0.65)
+        self.selection_actor.SetVisibility(True)
+        sizes = editing.region_sizes(model.mesh)
+        total = sum(sizes) or 1
+        picked = sum(sizes[i] for i in self.selected_regions if i < len(sizes))
+        self.lbl_selection.setText(
+            f"Selected: {len(self.selected_regions)} structure(s), "
+            f"{picked * 100 // total}% of surface"
+        )
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _clear_selection_actor(self) -> None:
+        if self.selection_actor is not None:
+            self.selection_actor.SetVisibility(False)
+        self.lbl_selection.setText("Selected: none")
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _clear_selection(self) -> None:
+        self.selected_regions.clear()
+        self._clear_selection_actor()
+
+    def _apply_selection(self, invert: bool) -> None:
+        """Keep only, or delete, the currently selected structures."""
+        model = self._active_edit_model()
+        if model is None or model.mesh is None:
+            self.status.setText("Load a study first.")
+            return
+        if not self.selected_regions:
+            self.status.setText("Nothing selected -- click a bone first.")
+            return
+        self.undo_mesh = model.mesh
+        model.mesh = editing.extract_regions(
+            model.mesh, self.selected_regions, invert=invert
+        )
+        self.selected_regions.clear()
+        self._clear_selection_actor()
+        self._apply_model_display(self.edit_key)
+        self.vtk_widget.GetRenderWindow().Render()
+        self.status.setText(
+            f"{'Deleted' if invert else 'Isolated'} selection on {model.label}."
+        )
+
+    def _toggle_scissors(self, enabled: bool) -> None:
+        """Draw a closed loop on screen; cut everything inside it."""
+        if not enabled:
+            if self.lasso_widget is not None:
+                self.lasso_widget.Off()
+                self.lasso_widget = None
+            self.status.setText("Scissors off.")
+            return
+        if self.btn_pick.isChecked():
+            self.btn_pick.setChecked(False)
+        model = self._active_edit_model()
+        if model is None or model.mesh is None:
+            self.status.setText("Load a study first.")
+            self.btn_scissors.setChecked(False)
+            return
+
+        # Freehand loop drawn on screen with a contour widget.
+        rep = vtk.vtkOrientedGlyphContourRepresentation()
+        rep.GetLinesProperty().SetColor(1.0, 0.4, 0.1)
+        rep.GetLinesProperty().SetLineWidth(3.0)
+        widget = vtk.vtkContourWidget()
+        widget.SetRepresentation(rep)
+        widget.SetInteractor(self.interactor)
+        widget.ContinuousDrawOn()
+        widget.On()
+        self.lasso_widget = widget
+        self.status.setText(
+            "Scissors: drag to draw a loop around the part to remove, "
+            "then press 'Apply lasso cut'."
+        )
+
+    def _apply_lasso(self) -> None:
+        """Cut the mesh with the drawn loop, along the current view direction."""
+        model = self._active_edit_model()
+        if self.lasso_widget is None or model is None or model.mesh is None:
+            self.status.setText("Draw a lasso first.")
+            return
+        rep = self.lasso_widget.GetRepresentation()
+        node_poly = vtk.vtkPolyData()
+        rep.GetNodePolyData(node_poly)
+        n = node_poly.GetNumberOfPoints()
+        if n < 3:
+            self.status.setText("Lasso needs at least 3 points.")
+            return
+        loop = [node_poly.GetPoint(i) for i in range(n)]
+        normal = self.renderer.GetActiveCamera().GetDirectionOfProjection()
+
+        self.undo_mesh = model.mesh
+        model.mesh = editing.scissors_cut(
+            model.mesh, loop, normal,
+            keep_inside=self.chk_scissors_keep.isChecked(),
+        )
+        self.lasso_widget.Off()
+        self.lasso_widget = None
+        self.btn_scissors.setChecked(False)
+        self._apply_model_display(self.edit_key)
+        self.vtk_widget.GetRenderWindow().Render()
+        self.status.setText("Lasso cut applied.")
+
+    def _undo_edit(self) -> None:
+        model = self.models[self.edit_key]
+        if self.undo_mesh is None:
+            self.status.setText("Nothing to undo.")
+            return
+        model.mesh, self.undo_mesh = self.undo_mesh, None
+        self._clear_selection()
+        self._apply_model_display(self.edit_key)
+        self.vtk_widget.GetRenderWindow().Render()
+        self.status.setText("Edit undone.")
 
     # -------------------------------------------------------------- crop
     def _toggle_crop_box(self) -> None:
