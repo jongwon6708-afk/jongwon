@@ -96,15 +96,18 @@ result"* today chooses between a **€20–40k PACS-locked commercial licence** 
 | Contralateral mirror + ICP + deviation map | done | SlicerMorph / manual |
 | **Ortho measurement with targets and stage comparison** | **done** — gap #5 above | **nothing open does this** |
 | Plan versioning + JSON save/load | done | BoneStory's provenance tree (0★, research) |
-| **Osteotomy / fragment transform** | **not yet** | OsteotomyPlanner does this well |
-| **Plate/screw placement** | **not yet** | essentially nothing open |
+| **Osteotomy / fragment transform** | done | OsteotomyPlanner does this well |
+| **Plate/screw placement** | **done** (parametric, generated) | essentially nothing open |
+| **Construct checks** (purchase, lag, conflicts, standoff) | **done** — gaps #2/#3 above | nothing open does this outside the orbit |
 | FE stress analysis | not yet | FEBio + BoneMesh |
 
-Honest reading: on **reconstruction, clean-up, and measurement** this is
-already a tighter, more surgeon-shaped workflow than the free alternatives, and
-the measurement-with-targets layer addresses a gap nothing open source fills.
-On **simulation itself — moving fragments and applying hardware — we have not
-started**, and that is the whole point of the tool.
+Honest reading: the workflow now spans reconstruction → clean-up → osteotomy →
+reduction → implants → measurement, which no single open-source tool does, and
+the measurement-with-targets and construct-check layers address gaps nothing
+open source fills. The remaining honest limitations are that plates are
+**straight** (no anatomic contouring), screws are smooth cylinders rather than
+threaded, and there is **no FE stress analysis** — so this predicts *geometry*
+(does it fit, does it hold, does it reach), not *mechanics* (will it fail).
 
 ## 5. What to reuse rather than rebuild
 
@@ -132,15 +135,14 @@ started**, and that is the whole point of the tool.
 
 ## 6. Consequences for the roadmap
 
-1. **Build fragment transforms next** (select a fragment → translate/rotate with
-   a handle → landmarks move with it → measurements update). This is the
-   smallest step that turns the measurement layer into an actual simulator, and
-   it is what `docs/planning-loop.md` names as the blocking gap.
-2. **Then parametric implants** (CadQuery-generated plate + screw), followed by
-   plate-to-bone standoff mapping and screw-vs-articular-surface checking —
-   reusing the two reference implementations above.
-3. **Keep the measurement report as the differentiator.** It is the item the
-   commercial tools sell and no open tool provides.
+1. **Contour the plates.** Straight plates on a curved cortex only touch along
+   a line — the standoff map already computes the error to bend against, so
+   anatomic contouring is the natural next step and directly serves gap #6
+   (pre-bending output).
+2. **Register pre-op to post-op** so the plan can be audited against what was
+   actually achieved.
+3. **Keep the measurement + construct report as the differentiator.** It is the
+   item the commercial tools sell and no open tool provides.
 4. **Do not chase a Slicer rewrite.** Slicer is the richer substrate, but the
    identified gap is a *surgeon-usable focused workflow*, which is precisely
    what a standalone app does better.

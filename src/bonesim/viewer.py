@@ -22,7 +22,7 @@ from PyQt5 import QtWidgets
 from PyQt5.QtCore import Qt
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
-from . import analysis, editing, simulation
+from . import analysis, editing, fixation, implants, simulation
 from .analysis import cross_section
 from .camera_views import ANATOMICAL_VIEWS, CameraPose, apply_anatomical_view
 from .dicom_loader import CTVolume, load_dicom_series
@@ -38,6 +38,7 @@ REFERENCE_COLOR = (0.45, 0.85, 0.5)      # green standard/reference
 SELECTION_COLOR = (1.0, 0.55, 0.1)       # orange picked structure
 LANDMARK_COLOR = (1.0, 0.85, 0.2)        # yellow measurement landmark
 FRAGMENT_COLORS = [(0.92, 0.87, 0.78), (0.70, 0.85, 0.95)]  # osteotomy pieces
+IMPLANT_COLOR = (0.75, 0.76, 0.80)       # metal
 
 
 @dataclass
@@ -89,6 +90,11 @@ class ViewerWindow(QtWidgets.QMainWindow):
         self.fragment_actors: list[vtk.vtkActor] = []
         self.fragment_landmarks: list[set[str]] = []    # which move with which
         self.pre_osteotomy_mesh: vtk.vtkPolyData | None = None
+
+        # Implant state.
+        self.screw_meshes: list[vtk.vtkPolyData] = []
+        self.plate_mesh: vtk.vtkPolyData | None = None
+        self.implant_actors: list[vtk.vtkActor] = []
 
         self._build_ui()
 
@@ -293,6 +299,62 @@ class ViewerWindow(QtWidgets.QMainWindow):
         btn_reset_sim.clicked.connect(self._reset_simulation)
         sim_layout.addWidget(btn_reset_sim)
         v.addWidget(sim_box)
+
+        # --- Implants (plating / lag screw) ---
+        imp_box = QtWidgets.QGroupBox("Implants")
+        imp_layout = QtWidgets.QVBoxLayout(imp_box)
+        imp_layout.addWidget(QtWidgets.QLabel(
+            "Place 2 landmarks: 'screw_entry' and 'screw_target'"))
+
+        screw_row = QtWidgets.QHBoxLayout()
+        screw_row.addWidget(QtWidgets.QLabel("dia"))
+        self.screw_dia = QtWidgets.QDoubleSpinBox()
+        self.screw_dia.setRange(1.5, 8.0)
+        self.screw_dia.setValue(3.5)
+        self.screw_dia.setSingleStep(0.5)
+        screw_row.addWidget(self.screw_dia)
+        screw_row.addWidget(QtWidgets.QLabel("len"))
+        self.screw_len = QtWidgets.QDoubleSpinBox()
+        self.screw_len.setRange(6.0, 140.0)
+        self.screw_len.setValue(0.0)     # 0 = auto from the trajectory
+        self.screw_len.setSpecialValueText("auto")
+        self.screw_len.setSingleStep(2.0)
+        screw_row.addWidget(self.screw_len)
+        imp_layout.addLayout(screw_row)
+
+        btn_screw = QtWidgets.QPushButton("Add screw on trajectory")
+        btn_screw.clicked.connect(self._add_screw)
+        imp_layout.addWidget(btn_screw)
+
+        plate_row = QtWidgets.QHBoxLayout()
+        plate_row.addWidget(QtWidgets.QLabel("holes"))
+        self.plate_holes = QtWidgets.QSpinBox()
+        self.plate_holes.setRange(2, 16)
+        self.plate_holes.setValue(6)
+        plate_row.addWidget(self.plate_holes)
+        plate_row.addWidget(QtWidgets.QLabel("len"))
+        self.plate_len = QtWidgets.QDoubleSpinBox()
+        self.plate_len.setRange(20.0, 300.0)
+        self.plate_len.setValue(90.0)
+        plate_row.addWidget(self.plate_len)
+        imp_layout.addLayout(plate_row)
+
+        btn_plate = QtWidgets.QPushButton("Add plate on trajectory")
+        btn_plate.setToolTip(
+            "Uses the same two landmarks to lay the plate along the bone.")
+        btn_plate.clicked.connect(self._add_plate)
+        imp_layout.addWidget(btn_plate)
+
+        btn_report = QtWidgets.QPushButton("Check construct")
+        btn_report.setToolTip(
+            "Screw purchase, lag across the fracture, screw conflicts, "
+            "plate standoff.")
+        btn_report.clicked.connect(self._check_construct)
+        imp_layout.addWidget(btn_report)
+        btn_clear_imp = QtWidgets.QPushButton("Clear implants")
+        btn_clear_imp.clicked.connect(self._clear_implants)
+        imp_layout.addWidget(btn_clear_imp)
+        v.addWidget(imp_box)
 
         # --- Measurement / planning ---
         meas_box = QtWidgets.QGroupBox("Measure & plan")
@@ -945,6 +1007,112 @@ class ViewerWindow(QtWidgets.QMainWindow):
                 spin.blockSignals(False)
             self.vtk_widget.GetRenderWindow().Render()
             self.status.setText("Simulation reset.")
+
+    # ----------------------------------------------------------- implants
+    def _trajectory(self) -> tuple | None:
+        """Entry/target from the two trajectory landmarks on the current stage."""
+        stage = self._current_stage()
+        entry = stage.landmarks.get("screw_entry")
+        target = stage.landmarks.get("screw_target")
+        if entry is None or target is None:
+            self.status.setText(
+                "Place landmarks named 'screw_entry' and 'screw_target' first."
+            )
+            return None
+        return entry.position, target.position
+
+    def _add_implant_actor(self, mesh: vtk.vtkPolyData, color) -> None:
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(mesh)
+        mapper.ScalarVisibilityOff()
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(*color)
+        actor.GetProperty().SetSpecular(0.4)
+        actor.GetProperty().SetSpecularPower(30)
+        self.renderer.AddActor(actor)
+        self.implant_actors.append(actor)
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def _add_screw(self) -> None:
+        trajectory = self._trajectory()
+        if trajectory is None:
+            return
+        entry, target = trajectory
+        length = self.screw_len.value()
+        if length <= 0.0:  # "auto": span the trajectory
+            length = implants.length_for_trajectory(entry, target)
+        spec = implants.ScrewSpec(
+            length_mm=length, diameter_mm=self.screw_dia.value())
+        mesh = implants.place_along(
+            implants.make_screw(spec, spacing=0.35), entry, target)
+        self.screw_meshes.append(mesh)
+        self._add_implant_actor(mesh, IMPLANT_COLOR)
+        self.status.setText(
+            f"Screw {length:.0f} x {spec.diameter_mm:.1f} mm placed "
+            f"({len(self.screw_meshes)} total)."
+        )
+
+    def _add_plate(self) -> None:
+        trajectory = self._trajectory()
+        if trajectory is None:
+            return
+        entry, target = trajectory
+        spec = implants.PlateSpec(
+            length_mm=self.plate_len.value(),
+            hole_count=self.plate_holes.value())
+        mesh = implants.place_along(
+            implants.make_plate(spec, spacing=0.4), entry, target)
+        self.plate_mesh = mesh
+        self._add_implant_actor(mesh, IMPLANT_COLOR)
+        self.status.setText(
+            f"Plate {spec.length_mm:.0f} mm, {spec.hole_count} holes placed.")
+
+    def _check_construct(self) -> None:
+        model = self._active_edit_model()
+        if model is None or model.mesh is None:
+            self.status.setText("Load a study first.")
+            return
+        if not self.screw_meshes and self.plate_mesh is None:
+            self.status.setText("Add a screw or plate first.")
+            return
+
+        plane = None
+        if len(self.fragments) == 2:
+            plane = self._section_plane(
+                self.pre_osteotomy_mesh or model.mesh)
+
+        self.status.setText("Checking construct...")
+        QtWidgets.QApplication.processEvents()
+        report = fixation.construct_report(
+            model.mesh, self.screw_meshes, plate=self.plate_mesh,
+            fracture_plane=plane)
+
+        lines = []
+        for entry in report["screws"]:
+            line = (f"Screw {entry['index']}: purchase "
+                    f"{entry['purchase_fraction'] * 100:.0f}%")
+            if "lags_fracture" in entry:
+                line += f", lags={entry['lags_fracture']}"
+            if entry.get("conflicts_with"):
+                line += f", CONFLICTS {entry['conflicts_with']}"
+            lines.append(line)
+        if report["plate"] is not None:
+            p = report["plate"]
+            lines.append(
+                f"Plate standoff: min {p['min_mm']:.1f} mm, "
+                f"mean {p['mean_mm']:.1f} mm")
+        self.measure_output.setPlainText("\n".join(lines))
+        self.status.setText("Construct checked.")
+
+    def _clear_implants(self) -> None:
+        for actor in self.implant_actors:
+            self.renderer.RemoveActor(actor)
+        self.implant_actors.clear()
+        self.screw_meshes.clear()
+        self.plate_mesh = None
+        self.vtk_widget.GetRenderWindow().Render()
+        self.status.setText("Implants cleared.")
 
     # ------------------------------------------------------- measurement
     def _current_stage(self):

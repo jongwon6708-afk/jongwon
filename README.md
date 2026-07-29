@@ -68,6 +68,18 @@ the surgeon orient it freely the way they see it during surgery, and compare a
   zero gap) is flagged rather than scored as a good reduction.
 - **Save as plan stage** to compare the simulated result against pre-op.
 
+### Implants (plating / lag screw)
+- **Parametric AO-style screws and plates** generated in code — length,
+  diameter, hole count and plate length are parameters. (Vendor CAD is not
+  publicly licensable, so nothing is imported.)
+- Place a **trajectory** with two landmarks (`screw_entry`, `screw_target`),
+  then drop a screw on it (auto-length spans the trajectory) or lay a plate
+  along it.
+- **Check construct** reports screw **purchase** (% in bone), whether a screw
+  **lags the fracture** (crosses the fracture plane — the defining property of
+  a lag screw), **screw-to-screw conflicts**, and **plate standoff** from the
+  cortex.
+
 ### Measure & plan (iterative surgical planning)
 - Place named **landmarks** by clicking the bone, per **stage**
   (`pre-op`, `plan-v1`, `post-op`, …).
@@ -120,20 +132,23 @@ isolate dense cortical bone only.
 ```
 src/bonesim/
   dicom_loader.py    # DICOM series -> HU volume (numpy + vtkImageData)
-  preprocessing.py   # median denoise, crop-box table removal
+  preprocessing.py   # median denoise, crop-box table removal, solid fill
   reconstruction.py  # threshold + Flying Edges -> island-cleaned bone mesh
-  analysis.py        # fracture curvature/edges, mirror, ICP, deviation map
+  analysis.py        # fracture curvature/edges, cross-section, mirror, ICP
+  editing.py         # region pick + scissors lasso (clinical clean-up)
+  simulation.py      # osteotomy cut, fragment transforms, reduction quality
+  implants.py        # parametric AO-style screws and plates, placement
+  fixation.py        # purchase, lag check, screw conflicts, plate standoff
+  measurement.py     # landmarks, measurements, plan stages, compare, JSON
   camera_views.py    # anatomical presets + surgeon's-view save/recall
   viewer.py          # PyQt5 + VTK interactive window
   app.py             # entry point
 run.py               # launcher
-scripts/
-  render_demo.py           # offscreen render of a bone phantom
-  render_fracture_demo.py  # before/after of cleanup + fracture highlight
-tests/
-  test_pipeline.py   # reconstruction smoke tests
-  test_analysis.py   # cleanup, fracture, mirror/ICP/deviation tests
-  test_gui_smoke.py  # offscreen GUI wiring test (Qt 'offscreen' platform)
+docs/
+  planning-loop.md          # the iterate-until-on-target workflow
+  landscape-comparison.md   # what else exists, and the gap this fills
+scripts/                    # offscreen render demos (no display needed)
+tests/                      # 7 headless suites incl. GUI wiring
 ```
 
 All tests run headless (no display); the GUI test uses Qt's offscreen platform.
@@ -163,15 +178,11 @@ is the piece this project already has.
 
 ## Roadmap (next stages)
 
-1. **Fragment transforms** — select a fragment and move/rotate it, with
-   landmarks following, so measurements update live. This is the step that
-   turns the measurement layer into a simulator.
-2. **Parametric implants** — generate AO-style plates and screws with CadQuery
-   (vendor CAD is not publicly licensable), then plate-to-bone standoff
-   mapping and screw trajectory / articular-breach checking.
-3. **Pre/post registration** — align the two studies (ICP / landmark) so
+1. **Contoured (anatomic) plates** — plates are currently straight; the
+   standoff map already gives the error signal to bend against.
+2. **Pre/post registration** — align the two studies (ICP / landmark) so
    differences are spatially meaningful.
-4. **HU → elastic-modulus mapping** (Bonemat-style) to drive FEA.
-5. **FEA export** — generate FEBio / CalculiX input from the mesh for stress
+3. **HU → elastic-modulus mapping** (Bonemat-style) to drive FEA.
+4. **FEA export** — generate FEBio / CalculiX input from the mesh for stress
    analysis (drill/saw stress concentration, fracture reduction with
    ligament/tendon effects).

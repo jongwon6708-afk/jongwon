@@ -135,6 +135,27 @@ def main() -> int:
     assert win.fragments == []
     print("simulation (osteotomy + reduction) OK")
 
+    # Implants: place a trajectory, add a screw and plate, check the construct.
+    stage = win._current_stage()
+    bb = win.models["preop"].mesh.GetBounds()
+    bcx, bcy = (bb[0] + bb[1]) / 2, (bb[2] + bb[3]) / 2
+    stage.add_landmark("screw_entry", (bcx, bcy, bb[5] - 1.0))
+    stage.add_landmark("screw_target", (bcx, bcy, bb[4] + 1.0))
+    win.screw_dia.setValue(3.5)
+    win.screw_len.setValue(0.0)          # auto-length from the trajectory
+    win._add_screw()
+    assert len(win.screw_meshes) == 1
+    win.plate_len.setValue(30.0)
+    win.plate_holes.setValue(4)
+    win._add_plate()
+    assert win.plate_mesh is not None
+    win._check_construct()
+    out = win.measure_output.toPlainText()
+    assert "purchase" in out and "standoff" in out, out
+    win._clear_implants()
+    assert win.screw_meshes == [] and win.plate_mesh is None
+    print("implants (screw + plate + construct check) OK")
+
     # Compare-to-standard pipeline.
     win._mirror_to_reference()
     assert win.reference_mesh is not None

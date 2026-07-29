@@ -138,7 +138,7 @@ Current state and what is still missing:
 | 4 Measure | done (distance / vertex angle / line angle) |
 | 5 Target from contralateral | mirroring + ICP done; measuring the mirror as a stage still to wire |
 | 6a Simulate: osteotomy + reduction | done (cut plane → two fragments, translate/rotate, landmarks follow) |
-| 6b Simulate: implants (plate / lag screw) | **not built** — the remaining gap |
+| 6b Simulate: implants (plate / lag screw) | done (parametric screws/plates, trajectory placement, construct checks) |
 | 7 Re-measure | done — moving a fragment moves its landmarks, so measurements re-derive |
 | 8 Compare vs target | done (`compare`, plus a reduction verdict) |
 | 9 Post-op verification | reconstruct post-op works; needs pre/post registration to share a frame |
@@ -158,11 +158,36 @@ Overlap is measured by rasterising both fragments onto a shared grid and
 counting shared voxels. A boolean-intersection filter is the obvious
 alternative but crashes here: fragments from one cut share a coplanar face.
 
+### Judging a fixation construct
+
+`fixation.construct_report()` answers the questions asked of a plan before
+committing to it:
+
+| Check | Why it decides the plan |
+|---|---|
+| screw purchase (% of screw in bone) | a screw mostly outside bone will not hold |
+| lags the fracture? | a lag screw only compresses if it **crosses** the fracture plane; one contained in a single fragment cannot, however well seated |
+| articular breach | a screw in the joint |
+| screw-to-screw clearance | two trajectories that collide cannot both be drilled |
+| plate standoff (min/mean/max mm) | a straight plate on a curved cortex only contacts along a line — the mean standoff is what tells you how much contouring it needs |
+
+Implants are **generated**, not imported: vendor CAD (DePuy, Stryker) is not
+publicly licensable and model-library files forbid redistribution. Generating
+AO-style geometry sidesteps that and makes length, diameter, hole count and
+curvature *parameters* — which is what "which plate and screw fit this
+patient?" actually needs. Screw shafts are smooth cylinders rather than
+threaded helices: thread form does not change trajectory, length selection,
+breach or purchase, so modelling it would cost mesh complexity for no planning
+value.
+
+`implants.place_along()` aims an implant from an entry point toward a target,
+but keeps the length it was built with — exactly as a real screw does. Use
+`implants.length_for_trajectory()` to size it first.
+
 ### What is left
 
-**Implants (6b).** Per `landscape-comparison.md`, vendor plate/screw CAD is not
-publicly licensable, so the plan is to *generate* AO-style geometry
-parametrically (CadQuery/build123d) — which also makes plate length, hole count
-and curvature tunable, i.e. exactly the "which plate fits?" question. On top of
-that: plate-to-bone standoff mapping, and screw trajectory checks against the
-articular surface, the far cortex and other screws.
+- **Pre/post registration** so a post-op CT shares a frame with the plan.
+- **Contoured (anatomic) plates** — currently plates are straight; bending them
+  to a patient's cortex is the natural next step, and the standoff map already
+  provides the error signal to bend against.
+- **FE stress analysis** (FEBio/CalculiX) on the finished construct.
